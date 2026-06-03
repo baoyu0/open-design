@@ -115,7 +115,11 @@ import {
   AMR_LOGIN_POLL_INTERVAL_MS,
   amrLoginPollOutcome,
 } from './amrLoginPolling';
-import { SearchableModelSelect } from './modelOptions';
+import { renderModelOptions } from './modelOptions';
+import {
+  providerModelsCacheKey,
+  type ProviderModelsCache,
+} from './providerModelsCache';
 
 // The topbar chips (GitHub star, model switcher, Use everywhere)
 // collapse into the settings dropdown when the viewport gets
@@ -236,8 +240,8 @@ interface Props {
   // top-bar `InlineModelSwitcher` can render the active mode/agent/model
   // and persist changes through the same callbacks the project view uses.
   config: AppConfig;
-  providerModelsCache?: Record<string, ProviderModelOption[]>;
-  onProviderModelsCacheChange?: Dispatch<SetStateAction<Record<string, ProviderModelOption[]>>>;
+  providerModelsCache?: ProviderModelsCache;
+  onProviderModelsCacheChange?: Dispatch<SetStateAction<ProviderModelsCache>>;
   agents: AgentInfo[];
   daemonLive: boolean;
   onModeChange: (mode: ExecMode) => void;
@@ -307,6 +311,7 @@ interface Props {
       | 'appearance'
       | 'notifications'
       | 'pet'
+      | 'projectLocations'
       | 'library'
       | 'about'
       | 'memory'
@@ -403,6 +408,18 @@ export function EntryShell({
   const view: EntryViewKind = route.kind === 'home' ? route.view : 'home';
   const [previewSystemId, setPreviewSystemId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [localProviderModelsCache, setLocalProviderModelsCache] =
+    useState<ProviderModelsCache>({});
+  const hasSharedProviderModelsCache =
+    Boolean(sharedProviderModelsCache) && Boolean(onProviderModelsCacheChange);
+  const activeProviderModelsCache =
+    hasSharedProviderModelsCache
+      ? sharedProviderModelsCache!
+      : localProviderModelsCache;
+  const activeSetProviderModelsCache =
+    hasSharedProviderModelsCache
+      ? onProviderModelsCacheChange!
+      : setLocalProviderModelsCache;
   const [newProjectInitialTab, setNewProjectInitialTab] =
     useState<CreateTab>('prototype');
   const [integrationTab, setIntegrationTab] = useState<IntegrationTab>(integrationInitialTab);
@@ -553,6 +570,8 @@ export function EntryShell({
           <OnboardingView
             config={config}
             agents={agents}
+            providerModelsCache={activeProviderModelsCache}
+            onProviderModelsCacheChange={activeSetProviderModelsCache}
             daemonLive={daemonLive}
             onModeChange={onModeChange}
             onAgentChange={onAgentChange}
@@ -592,9 +611,9 @@ export function EntryShell({
                 <span className="entry-discord-badge__label">Join Discord</span>
               </a>
               <InlineModelSwitcher
-                providerModelsCache={sharedProviderModelsCache}
                 config={config}
                 agents={agents}
+                providerModelsCache={activeProviderModelsCache}
                 daemonLive={daemonLive}
                 onModeChange={onModeChange}
                 onAgentChange={onAgentChange}
@@ -777,8 +796,8 @@ function OnboardingView({
   onFinish,
 }: {
   config: AppConfig;
-  providerModelsCache?: Record<string, ProviderModelOption[]>;
-  onProviderModelsCacheChange?: Dispatch<SetStateAction<Record<string, ProviderModelOption[]>>>;
+  providerModelsCache?: ProviderModelsCache;
+  onProviderModelsCacheChange?: Dispatch<SetStateAction<ProviderModelsCache>>;
   agents: AgentInfo[];
   daemonLive: boolean;
   onModeChange: (mode: ExecMode) => void;
@@ -826,14 +845,18 @@ function OnboardingView({
     | { status: 'running'; inputKey: string }
     | { status: 'done'; inputKey: string; result: ProviderModelsResponse }
   >({ status: 'idle' });
-  const [amrCloudVisible, setAmrCloudVisible] = useState(
-    () => agents.length === 0 || agents.some((agent) => agent.id === 'amr' && agent.available),
-  );
-  const [localProviderModelsCache, setLocalProviderModelsCache] = useState<
-    Record<string, ProviderModelOption[]>
-  >({});
-  const providerModelsCache = sharedProviderModelsCache ?? localProviderModelsCache;
-  const setProviderModelsCache = onProviderModelsCacheChange ?? setLocalProviderModelsCache;
+  const [localProviderModelsCache, setLocalProviderModelsCache] =
+    useState<ProviderModelsCache>({});
+  const hasSharedProviderModelsCache =
+    Boolean(sharedProviderModelsCache) && Boolean(onProviderModelsCacheChange);
+  const activeProviderModelsCache =
+    hasSharedProviderModelsCache
+      ? sharedProviderModelsCache!
+      : localProviderModelsCache;
+  const activeSetProviderModelsCache =
+    hasSharedProviderModelsCache
+      ? onProviderModelsCacheChange!
+      : setLocalProviderModelsCache;
   const [profile, setProfile] = useState({
     role: '',
     orgSize: '',
@@ -864,12 +887,12 @@ function OnboardingView({
     config.apiKey.trim(),
     config.apiVersion?.trim() ?? '',
   ].join('\n');
-  const providerModelsInputKey = [
+  const providerModelsInputKey = providerModelsCacheKey(
     apiProtocol,
-    config.baseUrl.trim().replace(/\/+$/, ''),
-    config.apiKey.trim(),
-    apiProtocol === 'azure' ? (config.apiVersion?.trim() ?? '') : '',
-  ].join('\n');
+    config.baseUrl,
+    config.apiKey,
+    config.apiVersion ?? '',
+  );
   const canTestProvider =
     Boolean(config.apiKey.trim()) &&
     Boolean(config.baseUrl.trim()) &&
@@ -899,7 +922,7 @@ function OnboardingView({
     (agent) => agent.available && agent.id !== 'amr' && visibleAgentIds.includes(agent.id),
   );
   const amrAgent = agents.find((agent) => agent.id === 'amr' && agent.available) ?? null;
-  const showAmrCloudOption = amrCloudVisible;
+  const showAmrCloudOption = amrAgent !== null || agents.length === 0;
   const amrSignedIn = amrStatus?.loggedIn === true;
   const amrSelectedAndSignedOut = runtime === 'amr' && !amrSignedIn;
   const amrAgentChoice = config.agentModels?.amr ?? {};
@@ -930,11 +953,6 @@ function OnboardingView({
       agentRevealTimersRef.current = [];
     };
   }, []);
-
-  useEffect(() => {
-    if (amrCloudVisible) return;
-    if (amrAgent || agents.length === 0) setAmrCloudVisible(true);
-  }, [agents.length, amrAgent, amrCloudVisible]);
 
   useEffect(() => {
     if (!amrAgent || runtime !== null) return;
@@ -1273,7 +1291,8 @@ function OnboardingView({
       value: model.id,
       label: model.label ?? model.id,
     })) ?? [];
-  const fetchedProviderModels = providerModelsCache[providerModelsInputKey] ?? [];
+  const fetchedProviderModels =
+    activeProviderModelsCache[providerModelsInputKey] ?? [];
   const byokModelOptions = mergeOnboardingProviderModelOptions(
     fetchedProviderModels,
     SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
@@ -1384,16 +1403,6 @@ function OnboardingView({
         return;
       }
       if (await pollAmrLoginCompletion()) {
-        // Re-detect agents now that AMR is signed in: the live `vela models`
-        // catalog only becomes fetchable after the credential lands, and the
-        // last detection ran while signed out (empty, fail-closed model
-        // list). Without this the model picker stays empty until an app
-        // restart. Best-effort — Settings can still rescan manually.
-        try {
-          await onRefreshAgents();
-        } catch {
-          // ignore; sign-in itself succeeded
-        }
         setStep((current) => current + 1);
       }
     } finally {
@@ -1565,7 +1574,7 @@ function OnboardingView({
   async function fetchProviderModelsInline() {
     if (!canFetchProviderModels || providerModelsState.status === 'running') return;
     const inputKey = providerModelsInputKey;
-    const cachedModels = providerModelsCache[inputKey];
+    const cachedModels = activeProviderModelsCache[inputKey];
     if (cachedModels) {
       setProviderModelsState({
         status: 'done',
@@ -1587,7 +1596,7 @@ function OnboardingView({
         apiKey: config.apiKey,
       });
       if (result.ok && result.models?.length) {
-        setProviderModelsCache((current) => ({
+        activeSetProviderModelsCache((current) => ({
           ...current,
           [inputKey]: result.models ?? [],
         }));
@@ -2053,24 +2062,13 @@ function OnboardingCliSetupPanel({
         </div>
       ) : null}
       {selectedAgent && modelOptions.length > 0 ? (
-        <label className="onboarding-view__model-picker">
-          <span className="onboarding-view__model-label">
-            {`${t('settings.modelPicker')} · ${selectedAgent.name}`}
-          </span>
-          <span className="onboarding-view__model-select-wrap">
-            <SearchableModelSelect
-              className="inline-switcher__select onboarding-view__model-select"
-              value={selectedModel}
-              onChange={onSelectModel}
-              models={modelOptions.map((option) => ({ id: option.value, label: option.label }))}
-              searchPlaceholder={t('newproj.modelSearch')}
-              searchInputTestId="onboarding-cli-model-search"
-              popoverTestId="onboarding-cli-model-popover"
-              minSearchableOptions={5}
-              popoverMinWidth={340}
-            />
-          </span>
-        </label>
+        <OnboardingDropdown
+          label={`${t('settings.modelPicker')} · ${selectedAgent.name}`}
+          placeholder={t('settings.modelSourceFallback')}
+          value={selectedModel}
+          options={modelOptions}
+          onChange={onSelectModel}
+        />
       ) : null}
     </div>
   );
@@ -2106,21 +2104,16 @@ function OnboardingAmrModelSelect({
         </span>
       </span>
       <span className="onboarding-view__model-select-wrap">
-        <SearchableModelSelect
-          className="inline-switcher__select onboarding-view__model-select"
+        <select
           value={selectedModel}
-          onChange={onSelectModel}
-          models={displayModels}
-          additionalOptions={
-            selectedModel && !displayModels.some((model) => model.id === selectedModel)
-              ? [{ value: selectedModel, label: selectedModel }]
-              : undefined
-          }
-          searchPlaceholder={t('newproj.modelSearch')}
-          searchInputTestId="onboarding-amr-model-search"
-          popoverTestId="onboarding-amr-model-popover"
-          minSearchableOptions={5}
-          popoverMinWidth={340}
+          onChange={(event) => onSelectModel(event.target.value)}
+        >
+          {renderModelOptions(displayModels)}
+        </select>
+        <Icon
+          name="chevron-down"
+          size={12}
+          className="onboarding-view__model-select-chevron"
         />
       </span>
     </label>
@@ -2297,27 +2290,14 @@ function OnboardingByokSetupPanel({
           />
         </label>
         {modelOptions.length > 0 ? (
-          <label className="onboarding-view__model-picker onboarding-view__setup-model-picker">
-            <span className="onboarding-view__model-label">{t('settings.model')}</span>
-            <span className="onboarding-view__model-select-wrap">
-              <SearchableModelSelect
-                className="inline-switcher__select onboarding-view__model-select"
-                value={model}
-                onChange={onModelChange}
-                models={modelOptions.map((option) => ({ id: option.value, label: option.label }))}
-                searchPlaceholder={t('newproj.modelSearch')}
-                searchInputTestId="onboarding-byok-model-search"
-                popoverTestId="onboarding-byok-model-popover"
-                minSearchableOptions={5}
-                popoverMinWidth={340}
-                additionalOptions={
-                  model && !modelOptions.some((option) => option.value === model)
-                    ? [{ value: model, label: model }]
-                    : undefined
-                }
-              />
-            </span>
-          </label>
+          <OnboardingDropdown
+            label={t('settings.model')}
+            placeholder={selectedProvider?.model ?? 'claude-sonnet-4-5'}
+            value={model}
+            options={modelOptions}
+            onChange={onModelChange}
+            placement="top"
+          />
         ) : (
           <label className="onboarding-view__inline-field">
             <span>{t('settings.model')}</span>

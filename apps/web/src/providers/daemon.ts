@@ -225,6 +225,7 @@ export interface DaemonStreamOptions {
   reasoning?: string | null;
   research?: ResearchOptions;
   context?: RunContextSelection;
+  mediaExecution?: MediaExecutionPolicy;
   locale?: string;
   initialLastEventId?: string | null;
   onRunCreated?: (runId: string) => void;
@@ -311,6 +312,7 @@ export async function streamViaDaemon({
   reasoning,
   research,
   context,
+  mediaExecution,
   locale,
   initialLastEventId,
   onRunCreated,
@@ -344,6 +346,7 @@ export async function streamViaDaemon({
     locale,
     ...(context ? { context } : {}),
     ...(research ? { research } : {}),
+    ...(mediaExecution ? { mediaExecution } : {}),
     ...(analyticsHints ? { analyticsHints } : {}),
   };
   const body = JSON.stringify(request);
@@ -790,7 +793,10 @@ async function consumeDaemonRun({
       }
     }
 
-    if (endStatus === 'canceled') return;
+    if (endStatus === 'canceled') {
+      handlers.onDone(acc);
+      return;
+    }
 
     // Trust the server's authoritative success declaration. When the server
     // explicitly sets `status: 'succeeded'` (either in the SSE end payload
@@ -913,6 +919,13 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
       outputTokens: usage.output_tokens,
       costUsd: typeof data.costUsd === 'number' ? data.costUsd : undefined,
       durationMs: typeof data.durationMs === 'number' ? data.durationMs : undefined,
+    };
+  }
+  if (t === 'fabricated_role_marker' && typeof data.marker === 'string') {
+    return {
+      kind: 'status',
+      label: 'warning',
+      detail: `Model emitted fabricated role marker ("${data.marker}"). Response was truncated to prevent unauthorized instruction injection.`,
     };
   }
   if (t === 'raw' && typeof data.line === 'string') {

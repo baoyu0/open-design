@@ -11,13 +11,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../i18n';
 import { KNOWN_PROVIDERS } from '../state/config';
+import { SUGGESTED_MODELS_BY_PROTOCOL } from '../state/apiProtocols';
 import {
   cancelVelaLogin,
   fetchVelaLoginStatus,
   startVelaLogin,
   type VelaLoginStatus,
 } from '../providers/daemon';
-import type { AgentInfo, ApiProtocol, AppConfig, ExecMode, ProviderModelOption } from '../types';
+import type { AgentInfo, ApiProtocol, AppConfig, ExecMode } from '../types';
 import { apiProtocolLabel } from '../utils/apiProtocol';
 import { AgentIcon } from './AgentIcon';
 import { Icon } from './Icon';
@@ -30,12 +31,17 @@ import {
   notifyAmrLoginStatusChanged,
 } from './amrLoginPolling';
 import { normalizeAgentModelChoice } from './agentModelSelection';
-import { fetchProviderModels } from '../providers/provider-models';
 import { SearchableModelSelect } from './modelOptions';
+import {
+  mergeProviderModelOptions,
+  providerModelsCacheKey,
+  type ProviderModelsCache,
+} from './providerModelsCache';
 
 interface Props {
   config: AppConfig;
   agents: AgentInfo[];
+  providerModelsCache?: ProviderModelsCache;
   daemonLive: boolean;
   onModeChange: (mode: ExecMode) => void;
   onAgentChange: (id: string) => void;
@@ -45,7 +51,6 @@ interface Props {
   ) => void;
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
-  providerModelsCache?: Record<string, ProviderModelOption[]>;
   onOpenSettings: (
     section?:
       | 'execution'
@@ -104,20 +109,19 @@ function displayAgentChipName(agent: Pick<AgentInfo, 'id' | 'name'>): string {
 export function InlineModelSwitcher({
   config,
   agents,
+  providerModelsCache,
   daemonLive,
   onModeChange,
   onAgentChange,
   onAgentModelChange,
   onApiProtocolChange,
   onApiModelChange,
-  providerModelsCache,
   onOpenSettings,
 }: Props) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [amrStatus, setAmrStatus] = useState<VelaLoginStatus | null>(null);
-  const [discoveredProviderModels, setDiscoveredProviderModels] = useState<Record<string, ProviderModelOption[]>>({});
   const [amrLoginPending, setAmrLoginPending] = useState(false);
   const [amrLoginError, setAmrLoginError] = useState(false);
   const [amrReminderSeen, setAmrReminderSeen] = useState(readAmrReminderSeen);
@@ -352,12 +356,6 @@ export function InlineModelSwitcher({
         : null;
 
   const apiProtocol = config.apiProtocol ?? 'anthropic';
-  const providerModelsInputKey = [
-    apiProtocol,
-    config.baseUrl.trim().replace(/\/+$/, ''),
-    config.apiKey.trim(),
-    apiProtocol === 'azure' ? (config.apiVersion?.trim() ?? '') : '',
-  ].join('\n');
   const providerForProtocol = useMemo(
     () =>
       KNOWN_PROVIDERS.find(
@@ -369,50 +367,40 @@ export function InlineModelSwitcher({
       ) ?? KNOWN_PROVIDERS.find((p) => p.protocol === apiProtocol),
     [apiProtocol, config.apiProviderBaseUrl],
   );
-  const fetchedProviderModels = providerModelsCache?.[providerModelsInputKey] ?? discoveredProviderModels[providerModelsInputKey] ?? [];
-  const apiModelOptions = useMemo(() => {
-    const discovered = fetchedProviderModels.map((model) => model.id);
-    const staticOptions = providerForProtocol?.models ?? [];
-    const merged = new Set<string>([...discovered, ...staticOptions]);
-    if (config.model.trim()) merged.add(config.model.trim());
-    return Array.from(merged);
-  }, [config.model, fetchedProviderModels, providerForProtocol?.models]);
-  const apiModelChoices = useMemo(
-    () => apiModelOptions.map((id) => ({ id, label: id })),
+  const providerModelsKey = useMemo(
+    () =>
+      providerModelsCacheKey(
+        apiProtocol,
+        config.baseUrl,
+        config.apiKey,
+        config.apiVersion ?? '',
+      ),
+    [apiProtocol, config.apiKey, config.apiVersion, config.baseUrl],
+  );
+  const fetchedApiModelOptions = providerModelsCache?.[providerModelsKey] ?? [];
+  const suggestedApiModelIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          providerForProtocol?.models?.length
+            ? providerForProtocol.models
+            : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+        ),
+      ),
+    [apiProtocol, providerForProtocol],
+  );
+  const apiModelOptions = useMemo(
+    () => mergeProviderModelOptions(fetchedApiModelOptions, suggestedApiModelIds),
+    [fetchedApiModelOptions, suggestedApiModelIds],
+  );
+  const apiModelIds = useMemo(
+    () => apiModelOptions.map((model) => model.id),
     [apiModelOptions],
   );
-
-  useEffect(() => {
-    if (!open || config.mode !== 'api') return;
-    if (fetchedProviderModels.length > 0) return;
-    if (apiProtocol === 'azure' || apiProtocol === 'ollama') return;
-    const baseUrl = config.baseUrl?.trim() ?? '';
-    const apiKey = config.apiKey?.trim() ?? '';
-    if (!baseUrl || !apiKey) return;
-    let cancelled = false;
-    void fetchProviderModels({
-      protocol: apiProtocol,
-      baseUrl,
-      apiKey,
-    }).then((result) => {
-      if (cancelled || !result.ok || !result.models?.length) return;
-      setDiscoveredProviderModels((current) => ({
-        ...current,
-        [providerModelsInputKey]: result.models ?? [],
-      }));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    open,
-    config.mode,
-    apiProtocol,
-    config.baseUrl,
-    config.apiKey,
-    providerModelsInputKey,
-    fetchedProviderModels.length,
-  ]);
+  const apiModelChoices = useMemo(
+    () => apiModelOptions.map((model) => ({ id: model.id, label: model.label })),
+    [apiModelOptions],
+  );
 
   // Chip text — keep it tight so the pill doesn't wrap on small viewports.
   // CLI: "Claude · Sonnet 4.5"; BYOK: "Anthropic · sonnet-4.5".
@@ -676,7 +664,6 @@ export function InlineModelSwitcher({
                     data-testid="inline-model-switcher-agent-model"
                     searchInputTestId="inline-model-switcher-agent-model-search"
                     popoverTestId="inline-model-switcher-agent-model-popover"
-                    minSearchableOptions={5}
                     searchPlaceholder={t('designs.searchPlaceholder')}
                     aria-label={t('inlineSwitcher.modelLabel')}
                     models={currentAgent.models}
@@ -747,7 +734,7 @@ export function InlineModelSwitcher({
                     value={config.model}
                     onChange={(nextValue) => onApiModelChange?.(nextValue)}
                     additionalOptions={
-                      config.model && !apiModelOptions.includes(config.model)
+                      config.model && !apiModelIds.includes(config.model)
                         ? [
                             {
                               value: config.model,

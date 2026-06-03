@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+// Regression: while a chat run is in flight the comment popover must queue
+// instead of showing a stuck "Sending..." state with a disabled primary action.
+
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,17 +25,16 @@ const target: PreviewCommentSnapshot = {
 };
 
 const labels: Record<string, string> = {
-  'chat.annotationQueue': 'Queue',
-  'chat.comments.comment': 'Comment',
-  'chat.comments.placeholder': 'Comment on this element...',
   'chat.comments.sendToChat': 'Send to chat',
-  'chat.comments.sending': 'Sending...',
+  'chat.comments.sending': 'Sending…',
+  'chat.annotationQueue': 'Queue',
+  'chat.comments.placeholder': 'Comment on this element…',
+  'chat.comments.comment': 'Comment',
 };
 
 describe('BoardComposerPopover queue on busy conversation', () => {
   it('shows Queue and stays clickable while a run is in flight', () => {
     const onSendBatch = vi.fn();
-
     render(
       <BoardComposerPopover
         target={target}
@@ -61,7 +63,7 @@ describe('BoardComposerPopover queue on busy conversation', () => {
     expect(onSendBatch).toHaveBeenCalledTimes(1);
   });
 
-  it('shows Sending only while the batch submit is in flight', () => {
+  it('shows Sending… only while the batch submit is in flight', () => {
     render(
       <BoardComposerPopover
         target={target}
@@ -83,7 +85,7 @@ describe('BoardComposerPopover queue on busy conversation', () => {
     );
 
     const send = screen.getByTestId('comment-add-send') as HTMLButtonElement;
-    expect(send.textContent).toBe('Sending...');
+    expect(send.textContent).toBe('Sending…');
     expect(send.disabled).toBe(true);
   });
 });
